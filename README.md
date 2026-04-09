@@ -258,6 +258,7 @@ exposed as `scriptName` / `pluginName`.
 | `fatJar` | Builds a fat JAR containing your compiled classes, resources, and any libs declared via `bundled(...)`. Does NOT bundle anything from `implementation` / `runtimeClasspath` — see "Declaring dependencies" above. Kotlin stdlib and JetBrains annotations are always stripped. |
 | `deployLocally` | Runs `fatJar` and copies the output into the platform-specific Tribot automations directory. |
 | `generateManifest` | Writes `echo-scripts.json` / `echo-plugins.json` into the main resources, derived from the `tribot { }` DSL. Wired as a `processResources` dependency. |
+| `zipSources` | Builds a source zip suitable for upload to the Tribot repo-compiler. Bundles this project's sources, its local project-dependency sources (walked transitively across `bundled`/`implementation`/`api`/`compileOnly`), and any non-source resources in those projects. Third-party jars and file dependencies are skipped — those have no source to bundle. Output: `build/libs/<project-name>-sources.zip`. Fails the build on any path collision between merged projects. |
 
 Automations directory:
 

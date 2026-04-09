@@ -7,11 +7,14 @@ import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.artifacts.Configuration
+import org.gradle.api.artifacts.ProjectDependency
 import org.gradle.api.artifacts.repositories.MavenArtifactRepository
 import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.logging.Logger
 import org.gradle.api.plugins.JavaPluginExtension
+import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.bundling.Jar
+import org.gradle.api.tasks.bundling.Zip
 import org.gradle.jvm.toolchain.JavaLanguageVersion
 import org.gradle.jvm.toolchain.JavaToolchainSpec
 import java.io.File
@@ -389,7 +392,129 @@ class TribotDevPlugin : Plugin<Project> {
                 })
             }
         })
+
+        registerZipSourcesTask(project)
     }
+
+    /**
+     * Registers a `zipSources` task that packages this project's sources + any local
+     * project-dependency sources into a zip suitable for upload to the Tribot
+     * repo-compiler.
+     *
+     * The repo-compiler extracts the uploaded zip directly into the `src/` directory
+     * of a fixed Gradle template, whose `sourceSets.main` treats `src/` as the root for
+     * both java/kotlin sources AND resources (everything not ending in .java/.kt is a
+     * resource). This means the zip must contain entries at their classpath-relative
+     * paths — e.g. `scripts/myScript/MyScript.kt` and `scripts/myScript/config.json`.
+     * Gradle's [SourceDirectorySet.allSource] produces exactly that layout when added
+     * to a [Zip] task's `from()`, so we just hand it off.
+     *
+     * Project dependencies on other local Gradle subprojects (typically declared via
+     * `bundled(project(":shared-library"))` or `implementation(project(...))`) get
+     * their sources merged into the same zip, walking transitively. Third-party deps
+     * and prebuilt file deps are skipped — their sources aren't available and the
+     * scripter is expected to either rely on `compileOnly` SDK-provided libs or
+     * re-vendor anything else they need as an in-repo project.
+     *
+     * Uses [DuplicatesStrategy.FAIL] so a path collision between merged projects
+     * fails the build loudly instead of silently dropping a file.
+     */
+    private fun registerZipSourcesTask(project: Project) {
+        project.tasks.register("zipSources", Zip::class.java, object : Action<Zip> {
+            override fun execute(zip: Zip) {
+                zip.group = "tribot"
+                zip.description =
+                    "Packages source code (this project + local project deps + resources) " +
+                        "into a zip suitable for upload to the Tribot repo-compiler."
+                zip.archiveBaseName.set(project.name)
+                zip.archiveClassifier.set("sources")
+                zip.archiveExtension.set("zip")
+                zip.archiveVersion.set("")
+                zip.destinationDirectory.set(project.layout.buildDirectory.dir("libs"))
+
+                // Path collisions between the origin project and a bundled library
+                // indicate a real problem — fail fast rather than silently overwriting.
+                zip.duplicatesStrategy = DuplicatesStrategy.FAIL
+
+                // Lazy provider: evaluated at task execution time, by which point all
+                // participating subprojects are guaranteed to be evaluated.
+                zip.from(
+                    project.provider {
+                        collectSourcesForZip(project)
+                    }
+                )
+            }
+        })
+    }
+
+    /**
+     * Collects [org.gradle.api.file.SourceDirectorySet] instances from the origin
+     * project and every transitively-reachable local project dependency, in BFS order
+     * with deduplication. Returns a flat list that [Zip.from] can consume.
+     *
+     * The walk covers `bundled`, `implementation`, `api`, and `compileOnly`
+     * configurations, which together cover everything a script might legitimately
+     * reference at compile time.
+     */
+    private fun collectSourcesForZip(originProject: Project): List<Any> {
+        val sources = mutableListOf<Any>()
+
+        originProject.extensions.findByType(SourceSetContainer::class.java)
+            ?.findByName("main")?.allSource
+            ?.let { sources.add(it) }
+
+        val relevantConfigs = listOf("bundled", "implementation", "api", "compileOnly")
+        val originPath = projectPath(originProject)
+        val visited = mutableSetOf(originPath)
+        val queue = ArrayDeque<Project>()
+        queue.addLast(originProject)
+
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            for (configName in relevantConfigs) {
+                val config = current.configurations.findByName(configName) ?: continue
+                for (dep in config.allDependencies) {
+                    if (dep !is ProjectDependency) continue
+                    val depPath = projectDependencyPath(dep) ?: continue
+                    if (!visited.add(depPath)) continue
+                    val depProject = originProject.rootProject.findProject(depPath) ?: continue
+                    depProject.extensions.findByType(SourceSetContainer::class.java)
+                        ?.findByName("main")?.allSource
+                        ?.let { sources.add(it) }
+                    queue.addLast(depProject)
+                }
+            }
+        }
+
+        return sources
+    }
+
+    /**
+     * Resolves a [ProjectDependency] to its colon-path form (e.g. `":test-library"`)
+     * across Gradle versions. Gradle 8.11 introduced [ProjectDependency.getPath]
+     * directly; Gradle 9.0 removed the older `getDependencyProject()` approach.
+     * Reflection keeps the plugin source-compatible with both the 8.x and 9.x APIs.
+     */
+    private fun projectDependencyPath(dep: ProjectDependency): String? {
+        // Gradle 8.11+ and Gradle 9.x: `ProjectDependency.getPath()`
+        val viaGetPath = runCatching {
+            dep.javaClass.getMethod("getPath").invoke(dep) as? String
+        }.getOrNull()
+        if (viaGetPath != null) return viaGetPath
+
+        // Gradle <= 8.10: fall back to `getDependencyProject().getPath()`
+        return runCatching {
+            val depProject = dep.javaClass.getMethod("getDependencyProject").invoke(dep)
+                ?: return@runCatching null
+            depProject.javaClass.getMethod("getPath").invoke(depProject) as? String
+        }.getOrNull()
+    }
+
+    /**
+     * Gets a [Project]'s colon-path. Stable across Gradle versions but wrapped here
+     * for symmetry with [projectDependencyPath].
+     */
+    private fun projectPath(project: Project): String = project.path
 
     private fun buildJsonManifest(
         rootKey: String,
