@@ -49,9 +49,18 @@ internal object ScriptDependencies {
     const val RUNELITE_COORD = "net.runelite:client:latest.release"
 
     // JitPack does NOT expose maven-metadata.xml, so `latest.release` does not work.
-    // This must be pinned to a specific automation-sdk release tag. Bump this string
-    // whenever automation-sdk cuts a new release.
-    const val AUTOMATION_SDK_COORD = "com.github.TribotRS:automation-sdk:v1.0.9"
+    // Instead, the plugin queries the GitHub Releases API at configuration time to
+    // resolve the latest tag for automation-sdk, falling back to the pinned fallback
+    // version below if the API is unreachable. Bump the fallback whenever automation-sdk
+    // cuts a new release that should be the last-known-good offline target.
+    const val AUTOMATION_SDK_GROUP_ARTIFACT = "com.github.TribotRS:automation-sdk"
+    const val AUTOMATION_SDK_REPO = "TribotRS/automation-sdk"
+    const val AUTOMATION_SDK_FALLBACK_VERSION = "v1.0.9"
+
+    // Self-check: the plugin also queries this repo's latest release and warns the
+    // consumer if they're running an older version. Only used for the warning, never
+    // used to resolve the running plugin (the plugin is what's RUNNING this code).
+    const val PLUGIN_REPO = "TribotRS/tribot-dev-plugin"
 
     const val EXPECTED_KOTLIN_VERSION = "2.1.21"
     const val EXPECTED_COMPOSE_VERSION = "1.8.0"
