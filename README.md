@@ -150,6 +150,52 @@ or the runtime.
 If you need reproducible builds (for example, in CI or for a specific supported release
 of Tribot), pin the plugin version explicitly: `id("org.tribot.dev") version "v1.0.5"`.
 
+## Refreshing to a new release
+
+Scripters usually run Gradle through IntelliJ, so here's what to do when you see a new
+release you want to pull in right away.
+
+### New `tribot-dev-plugin` release
+
+Click the **Reload** button (circular-arrows icon) in IntelliJ's Gradle tool window.
+Because your `settings.gradle.kts` resolves `version "latest"` via the GitHub API,
+Reload hits the API, pulls the new plugin jar, and reloads everything downstream —
+including a fresh `automation-sdk` lookup.
+
+### New `automation-sdk` release (with no plugin change)
+
+The plugin caches its `automation-sdk` API result in the Gradle daemon's memory for
+performance. If the plugin version itself hasn't changed, Reload alone won't dislodge
+that cache. You have three options, ranked by effort:
+
+1. **Fastest** — open IntelliJ's Terminal tool window and run `./gradlew --stop`, then
+   hit Reload in the Gradle tool window. About 5 seconds.
+2. **GUI-only** — `Cmd+Shift+A` (macOS) / `Ctrl+Shift+A` (Windows/Linux) to open
+   **Find Action**, type "Stop Gradle Daemons", hit Enter, then hit Reload.
+3. **Nuclear** — **File → Invalidate Caches → Invalidate and Restart**. Rebuilds
+   IntelliJ's indexes and restarts the Gradle daemon. Always works; takes 30–60
+   seconds depending on project size.
+
+### Passive refresh
+
+You usually don't need to do any of this. Gradle daemons idle out after ~3 hours, so a
+fresh daemon picks up whatever's latest automatically on the next sync. The manual
+steps above are only for "I saw the release announcement 5 minutes ago and want it
+*now*" scenarios.
+
+### Verifying what got resolved
+
+The plugin logs its resolved `automation-sdk` version at configure time:
+
+```
+tribot-dev-plugin: resolved automation-sdk → v1.0.9 (latest from TribotRS/automation-sdk)
+```
+
+If the suffix reads `(fallback pin — GitHub API unreachable)`, something blocked the
+API call (offline, corporate proxy, rate limit, etc.) and you're on the pinned fallback
+version. If you pinned a specific plugin version and it's stale, the plugin also emits
+a one-time warning at startup with the latest release number so you know when to bump.
+
 ## Declaring dependencies
 
 Tribot Echo already provides a large set of libraries on its runtime classpath —
