@@ -22,14 +22,36 @@ pluginManagement {
         maven("https://jitpack.io")
     }
 
+    // The resolution logic has to be inlined (not a top-level function) because Gradle's
+    // `pluginManagement` block runs in a restricted compilation context that can't see
+    // top-level script members.
     resolutionStrategy {
         eachPlugin {
             if (requested.id.id == "org.tribot.dev") {
                 val version = if (requested.version == "latest" || requested.version.isNullOrBlank()) {
-                    // Query GitHub for the latest tribot-dev-plugin release and cache the
-                    // result for this Gradle invocation. Falls back to the pinned version
-                    // below when offline or rate-limited.
-                    resolveLatestTribotDevPluginVersion()
+                    // Query GitHub for the latest tribot-dev-plugin release. Falls back
+                    // to the pinned version below if the API is unreachable (offline,
+                    // rate-limited, corporate proxy, etc). Bump the fallback occasionally
+                    // so your offline builds target a known-good version.
+                    val fallback = "v1.0.2"
+                    runCatching {
+                        val url = java.net.URI.create(
+                            "https://api.github.com/repos/TribotRS/tribot-dev-plugin/releases/latest"
+                        ).toURL()
+                        val conn = url.openConnection() as java.net.HttpURLConnection
+                        try {
+                            conn.setRequestProperty("Accept", "application/vnd.github+json")
+                            conn.setRequestProperty("User-Agent", "tribot-dev-plugin-bootstrap")
+                            conn.connectTimeout = 3000
+                            conn.readTimeout = 5000
+                            if (conn.responseCode == 200) {
+                                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                                Regex("\"tag_name\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+                            } else null
+                        } finally {
+                            conn.disconnect()
+                        }
+                    }.getOrNull() ?: fallback
                 } else {
                     requested.version!!
                 }
@@ -37,32 +59,6 @@ pluginManagement {
             }
         }
     }
-}
-
-/**
- * Queries api.github.com for the latest TribotRS/tribot-dev-plugin release tag.
- * Bump `fallback` occasionally to match a known-good offline target.
- */
-fun resolveLatestTribotDevPluginVersion(): String {
-    val fallback = "v1.0.2"
-    return runCatching {
-        val url = java.net.URI.create(
-            "https://api.github.com/repos/TribotRS/tribot-dev-plugin/releases/latest"
-        ).toURL()
-        val conn = url.openConnection() as java.net.HttpURLConnection
-        try {
-            conn.setRequestProperty("Accept", "application/vnd.github+json")
-            conn.setRequestProperty("User-Agent", "tribot-dev-plugin-bootstrap")
-            conn.connectTimeout = 3000
-            conn.readTimeout = 5000
-            if (conn.responseCode == 200) {
-                val body = conn.inputStream.bufferedReader().use { it.readText() }
-                Regex("\"tag_name\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
-            } else null
-        } finally {
-            conn.disconnect()
-        }
-    }.getOrNull() ?: fallback
 }
 
 rootProject.name = "my-automations"

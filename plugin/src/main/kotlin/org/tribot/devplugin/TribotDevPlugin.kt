@@ -46,36 +46,40 @@ class TribotDevPlugin : Plugin<Project> {
         private val outdatedWarningEmitted = AtomicBoolean(false)
 
         /**
-         * Lazily resolved latest `TribotRS/automation-sdk` release tag. Shared across
-         * all projects in the JVM via the companion object. Falls back to the pinned
-         * constant when the GitHub API is unreachable.
+         * Result of resolving a release tag — distinguishes a successful API lookup
+         * from a fallback so we can log the provenance accurately.
          */
-        private val latestAutomationSdkVersion: String by lazy {
-            resolveLatestReleaseTag(
-                ScriptDependencies.AUTOMATION_SDK_REPO,
-                ScriptDependencies.AUTOMATION_SDK_FALLBACK_VERSION,
-            )
+        private data class ResolvedRelease(val version: String, val fromApi: Boolean)
+
+        /**
+         * Lazily resolved latest `TribotRS/automation-sdk` release. Shared across all
+         * projects in the JVM. Falls back to the pinned constant when the API is
+         * unreachable; the `fromApi` flag records which branch we took.
+         */
+        private val latestAutomationSdk: ResolvedRelease by lazy {
+            val apiResult = queryLatestReleaseTag(ScriptDependencies.AUTOMATION_SDK_REPO)
+            if (apiResult != null) ResolvedRelease(apiResult, fromApi = true)
+            else ResolvedRelease(ScriptDependencies.AUTOMATION_SDK_FALLBACK_VERSION, fromApi = false)
         }
 
         /**
          * Lazily resolved latest `TribotRS/tribot-dev-plugin` release tag, used only
-         * for the "you're on an outdated plugin version" warning. Null when the API
-         * is unreachable — in which case we skip the warning silently.
+         * for the outdated-plugin warning. Null when the API is unreachable — in which
+         * case we skip the warning silently.
          */
         private val latestTribotDevPluginVersion: String? by lazy {
-            resolveLatestReleaseTag(ScriptDependencies.PLUGIN_REPO, "")
-                .takeIf { it.isNotBlank() }
+            queryLatestReleaseTag(ScriptDependencies.PLUGIN_REPO)
         }
 
         /**
          * Queries `https://api.github.com/repos/<repo>/releases/latest` and extracts
-         * the `tag_name` field. Uses short timeouts so offline builds fail fast and
-         * fall back to the pinned version.
+         * the `tag_name` field. Returns null on any failure — unreachable host, non-200
+         * response, missing field, timeout, whatever — so callers can fall back cleanly.
          *
          * GitHub's Releases API allows 60 unauthenticated requests/hour, which is
-         * plenty because the result is cached per JVM via [by lazy] above.
+         * plenty because each result is cached per JVM via `by lazy` above.
          */
-        private fun resolveLatestReleaseTag(repo: String, fallback: String): String {
+        private fun queryLatestReleaseTag(repo: String): String? {
             return runCatching {
                 val url = URI.create("https://api.github.com/repos/$repo/releases/latest").toURL()
                 val conn = url.openConnection() as HttpURLConnection
@@ -91,7 +95,7 @@ class TribotDevPlugin : Plugin<Project> {
                 } finally {
                     conn.disconnect()
                 }
-            }.getOrNull() ?: fallback
+            }.getOrNull()
         }
     }
 
@@ -207,9 +211,12 @@ class TribotDevPlugin : Plugin<Project> {
         // Resolve the latest automation-sdk release at configuration time. The companion
         // object lazily queries the GitHub API on first use and caches the result for the
         // rest of the JVM lifetime.
-        val automationSdkVersion = latestAutomationSdkVersion
-        deps.add("compileOnly", "${ScriptDependencies.AUTOMATION_SDK_GROUP_ARTIFACT}:$automationSdkVersion")
-        logResolvedVersionsOnce(project.logger, automationSdkVersion)
+        val automationSdk = latestAutomationSdk
+        deps.add(
+            "compileOnly",
+            "${ScriptDependencies.AUTOMATION_SDK_GROUP_ARTIFACT}:${automationSdk.version}",
+        )
+        logResolvedVersionsOnce(project.logger, automationSdk)
 
         if (ext.useScriptSdk) {
             deps.add("compileOnly", "com.github.TribotRS.tribot-dev-plugin:script-sdk:$pluginVersion")
@@ -409,15 +416,16 @@ class TribotDevPlugin : Plugin<Project> {
      * so scripters can see exactly what the plugin is pulling in. Guarded by an atomic
      * flag so multi-module consumers don't get N copies of the same log line.
      */
-    private fun logResolvedVersionsOnce(logger: Logger, automationSdkVersion: String) {
+    private fun logResolvedVersionsOnce(logger: Logger, automationSdk: ResolvedRelease) {
         if (resolutionLogged.compareAndSet(false, true)) {
-            val source =
-                if (automationSdkVersion == ScriptDependencies.AUTOMATION_SDK_FALLBACK_VERSION) {
-                    "(fallback — GitHub API unreachable or returned the same pinned version)"
-                } else {
-                    "(latest from ${ScriptDependencies.AUTOMATION_SDK_REPO})"
-                }
-            logger.lifecycle("tribot-dev-plugin: resolved automation-sdk → $automationSdkVersion $source")
+            val source = if (automationSdk.fromApi) {
+                "(latest from ${ScriptDependencies.AUTOMATION_SDK_REPO})"
+            } else {
+                "(fallback pin — GitHub API unreachable)"
+            }
+            logger.lifecycle(
+                "tribot-dev-plugin: resolved automation-sdk → ${automationSdk.version} $source"
+            )
         }
     }
 
