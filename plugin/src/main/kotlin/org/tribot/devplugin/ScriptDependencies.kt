@@ -43,8 +43,15 @@ internal object ScriptDependencies {
     )
 
     const val JAVAFX_VERSION = "21"
+
+    // RuneLite's Maven repo (repo.runelite.net) exposes maven-metadata.xml, so
+    // `latest.release` resolves there.
     const val RUNELITE_COORD = "net.runelite:client:latest.release"
-    const val AUTOMATION_SDK_COORD = "com.github.TribotRS:automation-sdk:latest.release"
+
+    // JitPack does NOT expose maven-metadata.xml, so `latest.release` does not work.
+    // This must be pinned to a specific automation-sdk release tag. Bump this string
+    // whenever automation-sdk cuts a new release.
+    const val AUTOMATION_SDK_COORD = "com.github.TribotRS:automation-sdk:v1.0.9"
 
     const val EXPECTED_KOTLIN_VERSION = "2.1.21"
     const val EXPECTED_COMPOSE_VERSION = "1.8.0"
