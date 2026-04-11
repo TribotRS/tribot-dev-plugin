@@ -294,17 +294,40 @@ class TribotDevPlugin : Plugin<Project> {
             )
         } else null
 
+        // Generated manifest files live in a dedicated output directory rather than
+        // being written straight into `build/resources/main` (which is owned by
+        // processResources). Wiring that directory as a source-set resource srcDir
+        // lets processResources pick the files up naturally, and gives generateManifest
+        // an output directory it actually owns — so Gradle can invalidate and clean it
+        // correctly between runs.
+        val generatedResourcesDir = project.layout.buildDirectory.dir("generated/tribot-resources")
+
+        project.extensions.getByType(SourceSetContainer::class.java)
+            .getByName("main")
+            .resources
+            .srcDir(generatedResourcesDir)
+
         val generateManifest = project.tasks.register(
             "generateManifest",
             object : Action<Task> {
                 override fun execute(task: Task) {
                     task.group = "tribot"
                     task.description = "Generates echo-scripts.json / echo-plugins.json from the tribot { } DSL"
-                    val outputDir = project.layout.buildDirectory.dir("resources/main")
-                    task.outputs.dir(outputDir)
+                    // Register the manifest JSON strings as task inputs so edits to the
+                    // `tribot { }` DSL (class name, script name, version, author, etc.)
+                    // invalidate this task's up-to-date cache. Without this, Gradle would
+                    // keep the previous manifest files and the only workaround was
+                    // `gradle clean` before re-running `deployLocally`.
+                    task.inputs.property("scriptManifestJson", scriptManifestJson ?: "")
+                    task.inputs.property("pluginManifestJson", pluginManifestJson ?: "")
+                    task.outputs.dir(generatedResourcesDir)
                     task.doLast(object : Action<Task> {
                         override fun execute(t: Task) {
-                            val dir = outputDir.get().asFile
+                            val dir = generatedResourcesDir.get().asFile
+                            // Wipe the directory so stale manifest files (e.g. from a
+                            // previous run that had a script the user has since removed)
+                            // don't linger in the packaged fatJar.
+                            dir.deleteRecursively()
                             dir.mkdirs()
                             scriptManifestJson?.let { File(dir, "echo-scripts.json").writeText(it) }
                             pluginManifestJson?.let { File(dir, "echo-plugins.json").writeText(it) }
