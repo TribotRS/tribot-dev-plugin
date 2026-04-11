@@ -10,7 +10,6 @@ import org.gradle.api.artifacts.Configuration
 import org.gradle.api.artifacts.ProjectDependency
 import org.gradle.api.artifacts.repositories.MavenArtifactRepository
 import org.gradle.api.file.DuplicatesStrategy
-import org.gradle.api.logging.Logger
 import org.gradle.api.plugins.JavaPluginExtension
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.bundling.Jar
@@ -18,9 +17,6 @@ import org.gradle.api.tasks.bundling.Zip
 import org.gradle.jvm.toolchain.JavaLanguageVersion
 import org.gradle.jvm.toolchain.JavaToolchainSpec
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URI
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Gradle plugin that configures a project for developing Tribot automation scripts and
@@ -31,76 +27,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * via `project.logger.warn` on version drift so consumers are free to deliberately
  * override pinned versions at their own risk.
  *
- * The `automation-sdk` dependency is resolved at configuration time by querying the
- * GitHub Releases API for the latest `TribotRS/automation-sdk` tag. This means scripters
- * pick up new SDK releases automatically without us needing to re-release this plugin
- * every time. If the API is unreachable (offline, rate-limited, etc.) we fall back to
- * [ScriptDependencies.AUTOMATION_SDK_FALLBACK_VERSION].
+ * The `automation-sdk` dependency uses Gradle's `latest.release` dynamic version against
+ * JitPack's `maven-metadata.xml`, so scripters pick up new SDK releases automatically
+ * without needing to re-release this plugin every time.
  */
 class TribotDevPlugin : Plugin<Project> {
-
-    companion object {
-        /**
-         * Atomic flags to ensure the resolution-logging and outdated-plugin warnings
-         * fire at most once per JVM, even when the plugin is applied to many
-         * subprojects in the same build.
-         */
-        private val resolutionLogged = AtomicBoolean(false)
-        private val outdatedWarningEmitted = AtomicBoolean(false)
-
-        /**
-         * Result of resolving a release tag — distinguishes a successful API lookup
-         * from a fallback so we can log the provenance accurately.
-         */
-        private data class ResolvedRelease(val version: String, val fromApi: Boolean)
-
-        /**
-         * Lazily resolved latest `TribotRS/automation-sdk` release. Shared across all
-         * projects in the JVM. Falls back to the pinned constant when the API is
-         * unreachable; the `fromApi` flag records which branch we took.
-         */
-        private val latestAutomationSdk: ResolvedRelease by lazy {
-            val apiResult = queryLatestReleaseTag(ScriptDependencies.AUTOMATION_SDK_REPO)
-            if (apiResult != null) ResolvedRelease(apiResult, fromApi = true)
-            else ResolvedRelease(ScriptDependencies.AUTOMATION_SDK_FALLBACK_VERSION, fromApi = false)
-        }
-
-        /**
-         * Lazily resolved latest `TribotRS/tribot-dev-plugin` release tag, used only
-         * for the outdated-plugin warning. Null when the API is unreachable — in which
-         * case we skip the warning silently.
-         */
-        private val latestTribotDevPluginVersion: String? by lazy {
-            queryLatestReleaseTag(ScriptDependencies.PLUGIN_REPO)
-        }
-
-        /**
-         * Queries `https://api.github.com/repos/<repo>/releases/latest` and extracts
-         * the `tag_name` field. Returns null on any failure — unreachable host, non-200
-         * response, missing field, timeout, whatever — so callers can fall back cleanly.
-         *
-         * GitHub's Releases API allows 60 unauthenticated requests/hour, which is
-         * plenty because each result is cached per JVM via `by lazy` above.
-         */
-        private fun queryLatestReleaseTag(repo: String): String? {
-            return runCatching {
-                val url = URI.create("https://api.github.com/repos/$repo/releases/latest").toURL()
-                val conn = url.openConnection() as HttpURLConnection
-                try {
-                    conn.setRequestProperty("Accept", "application/vnd.github+json")
-                    conn.setRequestProperty("User-Agent", "tribot-dev-plugin")
-                    conn.connectTimeout = 3000
-                    conn.readTimeout = 5000
-                    if (conn.responseCode == 200) {
-                        val body = conn.inputStream.bufferedReader().use { it.readText() }
-                        Regex("\"tag_name\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
-                    } else null
-                } finally {
-                    conn.disconnect()
-                }
-            }.getOrNull()
-        }
-    }
 
     /**
      * The plugin's own published version, read from a META-INF resource generated during
@@ -116,11 +47,6 @@ class TribotDevPlugin : Plugin<Project> {
     }
 
     override fun apply(project: Project) {
-        // Emit the outdated-plugin warning once per JVM (atomic flag guards it against
-        // firing N times in multi-module builds). Silently skipped when running on a
-        // local snapshot build or when the GitHub API is unreachable.
-        maybeWarnIfOutdated(project.logger)
-
         // Hook on Kotlin plugin being applied so we can verify its version reflectively.
         project.plugins.withId("org.jetbrains.kotlin.jvm") {
             project.afterEvaluate(object : Action<Project> {
@@ -210,16 +136,7 @@ class TribotDevPlugin : Plugin<Project> {
             deps.add("compileOnly", coord)
         }
         deps.add("compileOnly", ScriptDependencies.RUNELITE_COORD)
-
-        // Resolve the latest automation-sdk release at configuration time. The companion
-        // object lazily queries the GitHub API on first use and caches the result for the
-        // rest of the JVM lifetime.
-        val automationSdk = latestAutomationSdk
-        deps.add(
-            "compileOnly",
-            "${ScriptDependencies.AUTOMATION_SDK_GROUP_ARTIFACT}:${automationSdk.version}",
-        )
-        logResolvedVersionsOnce(project.logger, automationSdk)
+        deps.add("compileOnly", ScriptDependencies.AUTOMATION_SDK_COORD)
 
         if (ext.useScriptSdk) {
             deps.add("compileOnly", "com.github.TribotRS.tribot-dev-plugin:script-sdk:$pluginVersion")
@@ -558,41 +475,4 @@ class TribotDevPlugin : Plugin<Project> {
             .replace("\"", "\\\"")
             .replace("\n", "\\n")
             .replace("\r", "\\r")
-
-    /**
-     * Emits a one-time `lifecycle` log line reporting the resolved automation-sdk version
-     * so scripters can see exactly what the plugin is pulling in. Guarded by an atomic
-     * flag so multi-module consumers don't get N copies of the same log line.
-     */
-    private fun logResolvedVersionsOnce(logger: Logger, automationSdk: ResolvedRelease) {
-        if (resolutionLogged.compareAndSet(false, true)) {
-            val source = if (automationSdk.fromApi) {
-                "(latest from ${ScriptDependencies.AUTOMATION_SDK_REPO})"
-            } else {
-                "(fallback pin — GitHub API unreachable)"
-            }
-            logger.lifecycle(
-                "tribot-dev-plugin: resolved automation-sdk → ${automationSdk.version} $source"
-            )
-        }
-    }
-
-    /**
-     * Emits a one-time warning if this plugin's running version is older than the latest
-     * published release on GitHub. Silently skipped for:
-     *  - Local snapshot builds (running `0.0.0-SNAPSHOT`)
-     *  - Unreachable GitHub API (we can't know, so we stay quiet)
-     *  - Up-to-date installs (nothing to warn about)
-     */
-    private fun maybeWarnIfOutdated(logger: Logger) {
-        if (!outdatedWarningEmitted.compareAndSet(false, true)) return
-        if (pluginVersion == "0.0.0-SNAPSHOT") return
-        val latest = latestTribotDevPluginVersion ?: return
-        if (latest == pluginVersion) return
-        logger.warn(
-            "tribot-dev-plugin: you're on $pluginVersion, latest release is $latest — " +
-                "consider bumping your `id(\"org.tribot.dev\") version \"…\"` declaration, " +
-                "or use version \"latest\" in settings.gradle.kts to auto-update."
-        )
-    }
 }
