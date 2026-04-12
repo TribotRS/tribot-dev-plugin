@@ -167,10 +167,14 @@ class TribotDevPlugin : Plugin<Project> {
             } else {
                 // Resolve `compose.desktop.currentOs` reflectively so we don't need a
                 // compile-time dependency on the Compose Gradle plugin.
+                // ComposeExtension exposes `getDependencies()` (not `getDesktop()`
+                // directly), so the reflective chain is:
+                //   compose -> getDependencies() -> getDesktop() -> getCurrentOs()
                 val composeExt = project.extensions.findByName("compose")
                 if (composeExt != null) {
                     runCatching {
-                        val desktop = composeExt.javaClass.getMethod("getDesktop").invoke(composeExt)
+                        val composeDeps = composeExt.javaClass.getMethod("getDependencies").invoke(composeExt)
+                        val desktop = composeDeps.javaClass.getMethod("getDesktop").invoke(composeDeps)
                         val currentOs = desktop.javaClass.getMethod("getCurrentOs").invoke(desktop)
                         if (currentOs != null) {
                             deps.add("compileOnly", currentOs)
