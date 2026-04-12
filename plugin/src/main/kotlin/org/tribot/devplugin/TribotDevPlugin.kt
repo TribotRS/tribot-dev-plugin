@@ -148,8 +148,9 @@ class TribotDevPlugin : Plugin<Project> {
         }
 
         if (ext.useJavaFx) {
+            val classifier = javafxClassifier()
             for (module in ScriptDependencies.javafxModules) {
-                deps.add("compileOnly", "org.openjfx:$module:${ScriptDependencies.JAVAFX_VERSION}")
+                deps.add("compileOnly", "org.openjfx:$module:${ScriptDependencies.JAVAFX_VERSION}:$classifier")
             }
         }
 
@@ -455,6 +456,17 @@ class TribotDevPlugin : Plugin<Project> {
      * for symmetry with [projectDependencyPath].
      */
     private fun projectPath(project: Project): String = project.path
+
+    private fun javafxClassifier(): String {
+        val os = System.getProperty("os.name").lowercase()
+        val arch = System.getProperty("os.arch").lowercase()
+        val isAarch64 = arch == "aarch64" || arch == "arm64"
+        return when {
+            os.contains("mac") -> if (isAarch64) "mac-aarch64" else "mac"
+            os.contains("win") -> if (isAarch64) "win-aarch64" else "win"
+            else -> if (isAarch64) "linux-aarch64" else "linux"
+        }
+    }
 
     private fun buildJsonManifest(
         rootKey: String,
