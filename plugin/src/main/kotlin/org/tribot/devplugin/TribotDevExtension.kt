@@ -11,6 +11,7 @@ import javax.inject.Inject
  * Defaults reflect the most common consumer setup (Script SDK on, legacy off, Compose
  * and JavaFX on). The automation-plugin container is named `automationPlugins` to avoid
  * clashing with Gradle's top-level `plugins { }` block inside the `tribot { }` closure.
+ * .
  */
 abstract class TribotDevExtension @Inject constructor(objects: ObjectFactory) {
 
